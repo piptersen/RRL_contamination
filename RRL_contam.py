@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import itertools
 from sklearn.gaussian_process import GaussianProcessRegressor
 import sklearn.gaussian_process.kernels as k
+from scipy.integrate import quad
 
 
 
@@ -28,6 +29,9 @@ def freq_z(nu_emit, z):
     return  (array) : Redshifted frequency of H transition
     '''
     return(nu_emit/(1+z))
+
+def contam21cm_z(nu_obs):
+    return((1420 / nu_obs) - 1)
 
 
 def beta_n(nu, b, n, T):
@@ -115,6 +119,28 @@ def H_z_calc(z):
 
 
 
+def madauFit(z):
+    '''
+    Calculates the fit for SFR from redshift (Madau & Dickinson 2014)
+    -----------------------------------
+    z                                 (array) : Redshift 
+    -----------------------------------
+    returns [Solar Mass / yr / Mpc^3] (array) : Star formation rate Density
+    '''
+    return (0.015 * (1 + z)**2.7 / (1 + ((1 + z)/2.9)**5.6))
+
+
+def delX_new(z):
+    '''
+    Integrand in delta_x calculation to calculate distance between 21cm emitter and RRL emitter
+    ---------------------------------------
+    z            (float) : Redshift where line is emitted
+    ---------------------------------------
+    return [Mpc] (float) : Distance between redshift z and observer
+    '''
+    c = 3e5
+    return(c / H_z_calc(z))
+
 def delX(nu_RRL, nu_21, z):
     '''
     Calculates the distance between 21cm emitter and RRL emitter
@@ -129,7 +155,6 @@ def delX(nu_RRL, nu_21, z):
     a = (1+z)**(-1)
     H = H_z_calc(z)
     return (((nu_RRL - nu_21) * c) / (a * H * nu_21))
-
 
 
 
@@ -148,12 +173,13 @@ def meanT_shifted(E_SFR, tau_L, N_HII, nu_emit, linewidth, bandwidth, z):
     --------------------------------------
     return    [K]                       (array) : Line temperature of particular RRL
     '''
+    E_SFR = madauFit(z)
     T_L = 3.9e-4 * (E_SFR / 0.1) * ((tau_L * N_HII) / 0.1) * (nu_emit / 150)**(-2.8) * (linewidth / 20) * (bandwidth / 1)**(-1) * ((1+z)/3)**(-0.5)
     return(T_L)
 
 
 
-def T_RRL(T_n, deltaX):
+def T_RRL(T_n, deltaX, z):
     '''
     Calculates the distance between 21cm emitter and RRL emitter
     ---------------------------------------
@@ -162,10 +188,16 @@ def T_RRL(T_n, deltaX):
     ---------------------------------------
     return [K]   (array) : Contamination of 21cm emission
     '''
-    b_RRL = 3
+    b_RRL = 3 / (1+z)
     k = 2*np.pi / 150
     return(T_n * b_RRL * np.exp(np.imag(k*deltaX)))
 
+
+def BB(nu, T):
+    h = 6.6261e-27
+    c = 3e5
+    k = 1.3807e-16
+    return(((2*h*nu**3) / c**2) * (1 / (np.exp((h*nu)/(k*T)) - 1)))
 
 
 def frequency_contamination(freq_range, contam_ind, nu_stack):
@@ -180,11 +212,13 @@ def frequency_contamination(freq_range, contam_ind, nu_stack):
     '''
     constack = list(itertools.chain.from_iterable(contam_ind))
     fstack = list(itertools.chain.from_iterable(nu_stack))
-    #print(fstack[0:200])
     hist, freq_range = np.histogram(fstack, bins=freq_range, weights=constack)
-    #print(hist)
     fig, ax = plt.subplots()
+    #ax.plot(freq_range[:-1], (BB(freq_range[:-1], 5e-9)), color = 'red')
     ax.plot(freq_range[:-1], -hist)
+    #plt.axvline(x = 200.66, color = 'red')
+    #plt.axvline(x = 204.33, color = 'red')
+    #plt.axvline(x = 208.0, color = 'red')
     ax.set_xlabel(r'$\nu$')
     ax.set_ylabel(r'$T_{RRL}$')
     #ax.fill_between(fstack, min(-hist), max(-hist), alpha=0.2, color = 'orange')
@@ -265,14 +299,14 @@ def line_contamination(z_min, z_max, n_min, n_max, HI_freq_min, HI_freq_max, EM,
         
         temp_line = meanT_shifted(E_SFR, tau_L[i], N_HII, nu_emitted, linewidth, bandwidth, z_observable) * deltaZ
         
-        #deltaX_n = delX(nu_observable, freq_z(1420, z_observable), z_observable)
-        deltaX_n = delX(nu_emitted, 1420, z_observable)
+        #deltaX_n = delX(nu_emitted, 1420, z_observable)
+        deltaX_n = np.array([quad(delX_new, z_rrl, z_21)[0] for z_rrl, z_21 in zip(z_observable, contam21cm_z(nu_observable))])
     
-        contam_ind.append(T_RRL(temp_line, deltaX_n))
+        contam_ind.append(T_RRL(temp_line, deltaX_n, z_observable))
         nu_stack.append(nu_observable)
     
     if plot_freqContam == True:
-        frequency_contamination(np.linspace(nu_band_min, nu_band_max, 200), contam_ind, nu_stack)
+        frequency_contamination(np.linspace(nu_band_min, nu_band_max, 1_00), contam_ind, nu_stack)
     if plot_nContam == True:
         n_contamination(np.arange(n_band_min, n_band_max, 1), contam_ind, n_min)
     
